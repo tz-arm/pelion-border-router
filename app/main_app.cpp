@@ -348,7 +348,7 @@ int main(void)
     cloud_client->setup(network);
 
     t.start(callback(&queue, &EventQueue::dispatch_forever));
-    queue.call_every(5000, value_increment);
+    queue.call_every(15000, value_increment);
 
     sync_semaphore.acquire();
 
