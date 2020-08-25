@@ -25,6 +25,14 @@
 
 #include "mbed-trace/mbed_trace.h"             // Required for mbed_trace_*
 
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+#include "ip6string.h"
+extern "C" {
+    #include "ws_bbr_api.h"
+};
+
+#endif
+
 // Pointers to the resources that will be created in main_application().
 static MbedCloudClient *cloud_client;
 static bool cloud_client_running = true;
@@ -37,6 +45,12 @@ int8_t mesh_iface_id = 2;
 
 // Fake entropy needed for non-TRNG boards. Suitable only for demo devices.
 const uint8_t MBED_CLOUD_DEV_ENTROPY[] = { 0xf6, 0xd6, 0xc0, 0x09, 0x9e, 0x6e, 0xf2, 0x37, 0xdc, 0x29, 0x88, 0xf1, 0x57, 0x32, 0x7d, 0xde, 0xac, 0xb3, 0x99, 0x8c, 0xb9, 0x11, 0x35, 0x18, 0xeb, 0x48, 0x29, 0x03, 0x6a, 0x94, 0x6d, 0xe8, 0x40, 0xc0, 0x28, 0xcc, 0xe4, 0x04, 0xc3, 0x1f, 0x4b, 0xc2, 0xe0, 0x68, 0xa0, 0x93, 0xe6, 0x3a };
+
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+static M2MResource* _res_routing;
+static M2MResource* _res_iid;
+static Thread _thread_routing_update(osPriorityLow);
+#endif
 
 static M2MResource* m2m_get_res;
 static M2MResource* m2m_put_res;
@@ -225,10 +239,111 @@ static int8_t mesh_interface_up (void)
         ws_bbr_start(mesh_iface_id, backhaul_iface_id);
         printf ("MESH UP\n");
         interface_connected = true;
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+        // Wait until dodag information is available.
+        // This information is needed for lwm2m registration
+        int ret = -1;
+        bbr_information_t bbr_info = {0};
+        char addr[45] = {0};
+        int counter = 0;
+        do {
+            ThisThread::sleep_for(10 * 1000);
+            ret = ws_bbr_info_get(mesh_iface_id, &bbr_info);
+            counter++;
+        } while(ret != 0 && counter < 30);
+
+        if (ret != 0) {
+            printf ("Failed to get dodag information!\n");
+            return -1;
+        }
+
+        ip6tos(bbr_info.dodag_id, addr);
+        printf("Mesh up, dodag info: %s\n", addr);
+        uint16_t panid;
+        ws_bbr_pan_configuration_get(mesh_iface_id, &panid);
+
+#endif
         return 0;
     }
     return -1;
 }
+
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+void trace_route_info(bbr_route_info_t* ptr)
+{
+    printf("Node::");
+    int i=0;
+    for(i =0; i<7; i++)
+    {
+        printf("%2x: ",ptr->target[i]);
+    }
+    printf("%2x ",ptr->target[i]);
+    printf("==> Parent::");
+    for(i =0; i<7; i++)
+    {
+        printf("%2x ",ptr->parent[i]);
+    }
+    printf("%2x ",ptr->parent[i]);
+    printf("\r\n");
+}
+
+
+void read_routing_table()
+{
+    bbr_information_t bbr_info = {0};
+    int mesh_size = 0;
+    int ret = 0;
+    int len = 0;
+
+    while(true)
+    {
+        ThisThread::sleep_for(20*1000);
+        printf("Get Routing Table\r\n");
+        ret = ws_bbr_info_get(mesh_iface_id, &bbr_info);
+        if (ret == 0) {
+            printf("Mesh Size - %d\r\n", bbr_info.devices_in_network);
+            mesh_size = bbr_info.devices_in_network;
+        } else {
+            tr_error("read_bbr_info - Failed :%d", ret);
+            return;
+        }
+
+        if(mesh_size == 0)
+        {
+            printf("No LN joined yet\r\n");
+            continue;
+        }
+
+        len = sizeof(bbr_route_info_t) * mesh_size;
+        bbr_route_info_t* table_p = (bbr_route_info_t*)malloc(len); 
+
+        ret = ws_bbr_routing_table_get(mesh_iface_id, table_p, len);
+
+        if(ret<0)
+        {
+            printf("Routing Get Error\r\n");
+        }
+        else if(ret ==0 )
+        {
+            printf("No LN joined yet\r\n");
+            continue;
+        }
+        printf("Table Size: %d\r\n", ret);
+
+        bbr_route_info_t * cur = table_p;
+        for(int i=0; i<ret; i++)
+        {
+            // printf("Node::%s || Parent::%s\r\n", cur->target, cur->parent);
+            trace_route_info(cur);
+            cur++;
+        }
+        printf("Update value to pelion\r\n");
+        _res_routing->set_value_raw((uint8_t*)table_p,ret*sizeof(bbr_route_info_t));
+        printf("Get Routing Table Done\r\n");
+    }
+}
+#endif
+
 /*--------------------------------------------------------------------------*/
 #ifndef MBED_TEST_MODE
 int main(void)
@@ -248,6 +363,9 @@ int main(void)
         printf("kv_init_storage_config() - failed, status %d\n", status);
         return -1;
     }
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+    //mesh_system_init();
+#endif
 
     nanostack_heap_region_add ();
 
@@ -336,6 +454,38 @@ int main(void)
         m2m_factory_reset_res->set_execute_function(factory_reset);
     }
 
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+    if (mesh_interface_up () < 0)
+    {
+        printf ("Failed to Bring Mesh Interface UP\n");
+        network->disconnect();
+        return -1;
+    }
+
+    static SocketAddress meshsa;
+    nsapi_error_t err;
+    err = mesh_network->get_ip_address(&meshsa);
+    static uint8_t IIDs[8];
+    uint8_t* ip_t = (uint8_t*)meshsa.get_ip_bytes();
+
+    printf("IP bytes:");
+    for(int i =0; i<16; i++)
+    {
+        printf("%2x ", ip_t[i]);
+    }
+    printf("\r\n");
+    memcpy(IIDs,ip_t+8,8);
+
+    // Create resource for IID . Path of this resource will be: 26241/0/9.
+    _res_iid = M2MInterfaceFactory::create_resource(m2m_obj_list, 26241, 0, 9, M2MResourceInstance::OPAQUE, M2MBase::GET_POST_ALLOWED);
+    _res_iid->set_value_raw(IIDs,8);
+
+    // GET resource 26241/0/8
+    // PUT also allowed for resetting the resource
+    _res_routing = M2MInterfaceFactory::create_resource(m2m_obj_list, 26241, 0, 8, M2MResourceInstance::OPAQUE, M2MBase::GET_POST_ALLOWED);
+    //_res_routing -> set_resource_read_callback(read_routing_table);
+#endif
+
     printf("Register Pelion Device Management Client\n\n");
 
 #ifdef MBED_CLOUD_CLIENT_SUPPORT_UPDATE
@@ -348,18 +498,21 @@ int main(void)
     cloud_client->setup(network);
 
     t.start(callback(&queue, &EventQueue::dispatch_forever));
-    queue.call_every(15000, value_increment);
+    queue.call_every(20000, value_increment);
 
     sync_semaphore.acquire();
 
-    if (mesh_interface_up () < 0)
+#if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
+    _thread_routing_update.start(read_routing_table);
+#else
+    if (mesh_interface_up() < 0)
     {
         printf ("Failed to Bring Mesh Interface UP\n");
         deregister_client();
         network->disconnect();
         return -1;
     }
-
+#endif
     // Flush the stdin buffer before reading from it
     flush_stdin_buffer();
 
