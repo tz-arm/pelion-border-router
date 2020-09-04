@@ -271,22 +271,14 @@ static int8_t mesh_interface_up (void)
 #if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
 void trace_route_info(bbr_route_info_t* ptr)
 {
-    printf("Node::");
-    int i=0;
-    for(i =0; i<7; i++)
+    if((ptr->target==NULL)||(ptr->parent==NULL))
     {
-        printf("%2x: ",ptr->target[i]);
+        tr_err("[SMeter] ptr->target/parent==NULL\n");
+        return;
     }
-    printf("%2x ",ptr->target[i]);
-    printf("==> Parent::");
-    for(i =0; i<7; i++)
-    {
-        printf("%2x ",ptr->parent[i]);
-    }
-    printf("%2x ",ptr->parent[i]);
-    printf("\r\n");
-}
 
+    tr_warn("[SMeter] Node:: %s ==> Parent:: %s \n", trace_array(ptr->target, 8), trace_array(ptr->parent, 8));
+}
 
 void read_routing_table()
 {
@@ -298,10 +290,10 @@ void read_routing_table()
     while(true)
     {
         ThisThread::sleep_for(20*1000);
-        printf("Get Routing Table\r\n");
+        tr_warn("[SMeter] Get Routing Table\r\n");
         ret = ws_bbr_info_get(mesh_iface_id, &bbr_info);
         if (ret == 0) {
-            printf("Mesh Size - %d\r\n", bbr_info.devices_in_network);
+            tr_warn("[SMeter] Mesh Size - %d\r\n", bbr_info.devices_in_network);
             mesh_size = bbr_info.devices_in_network;
         } else {
             tr_error("read_bbr_info - Failed :%d", ret);
@@ -310,7 +302,7 @@ void read_routing_table()
 
         if(mesh_size == 0)
         {
-            printf("No LN joined yet\r\n");
+            tr_warn("[SMeter] No LN joined yet\r\n");
             continue;
         }
 
@@ -321,14 +313,14 @@ void read_routing_table()
 
         if(ret<0)
         {
-            printf("Routing Get Error\r\n");
+            tr_warn("[SMeter] Routing Get Error\r\n");
         }
         else if(ret ==0 )
         {
-            printf("No LN joined yet\r\n");
+            tr_warn("[SMeter] No LN joined yet\r\n");
             continue;
         }
-        printf("Table Size: %d\r\n", ret);
+        tr_warn("[SMeter] Table Size: %d\r\n", ret);
 
         bbr_route_info_t * cur = table_p;
         for(int i=0; i<ret; i++)
@@ -337,9 +329,9 @@ void read_routing_table()
             trace_route_info(cur);
             cur++;
         }
-        printf("Update value to pelion\r\n");
+        tr_warn("[SMeter] Update value to pelion\r\n");
         _res_routing->set_value_raw((uint8_t*)table_p,ret*sizeof(bbr_route_info_t));
-        printf("Get Routing Table Done\r\n");
+        tr_warn("[SMeter] Get Routing Table Done\r\n");
     }
 }
 #endif
@@ -457,7 +449,7 @@ int main(void)
 #if defined(PLATFORM_WISUN_SMART_METER) && (PLATFORM_WISUN_SMART_METER == 1)
     if (mesh_interface_up () < 0)
     {
-        printf ("Failed to Bring Mesh Interface UP\n");
+        tr_err("[SMeter]Failed to Bring Mesh Interface UP\n");
         network->disconnect();
         return -1;
     }
@@ -468,12 +460,7 @@ int main(void)
     static uint8_t IIDs[8];
     uint8_t* ip_t = (uint8_t*)meshsa.get_ip_bytes();
 
-    printf("IP bytes:");
-    for(int i =0; i<16; i++)
-    {
-        printf("%2x ", ip_t[i]);
-    }
-    printf("\r\n");
+    tr_warn("[SMeter] IPV6: %s", trace_array(ip_t, 16));
     memcpy(IIDs,ip_t+8,8);
 
     // Create resource for IID . Path of this resource will be: 26241/0/9.
